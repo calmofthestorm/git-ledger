@@ -1,0 +1,19 @@
+[package]
+name = "git-ledger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+arr_macro = "0.2"
+gix-hash = "0.11"
+gix-object = "0.29"
+gix-ref = "0.29"
+gix-config = "0.22"
+gix = { version="0.44", features = [ "blocking-http-transport-reqwest-rust-tls", "blocking-network-client", "blocking-http-transport-reqwest" ]}
+hex = "0.4"
+once_cell = "1.17"
+rand = "0.8"
+
+[dev-dependencies]
+tempdir = "0.3"

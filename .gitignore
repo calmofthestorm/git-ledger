@@ -1,0 +1,5 @@
+.*.~undo-tree~
+contaminated_hg_older_history.tar
+git-remote-recursive
+target
+.gnupg
