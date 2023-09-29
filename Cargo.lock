@@ -411,6 +411,7 @@ dependencies = [
  "gix-object",
  "gix-ref",
  "hex",
+ "log",
  "once_cell",
  "rand 0.8.5",
  "tempdir",

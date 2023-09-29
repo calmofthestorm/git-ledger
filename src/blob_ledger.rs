@@ -14,6 +14,7 @@ use crate::GitLedger;
 
 /// Degenerate case of `GitLedger` where state is a single blob, permitting a
 /// simpler API. Locks with a lease.
+#[derive(Clone)]
 pub struct BlobGitLedger {
     inner: GitLedger,
     poll_time: Duration,
@@ -29,6 +30,11 @@ pub struct BlobGitLedgerGuard {
 
 impl BlobGitLedger {
     pub fn new(inner: GitLedger, poll_time: Duration, lease_length: Duration) -> BlobGitLedger {
+        log::trace!(
+            "Initialize BlobGitLedger with poll_time {:?} and lease length {:?}",
+            poll_time,
+            lease_length
+        );
         BlobGitLedger {
             inner,
             poll_time,
@@ -40,31 +46,57 @@ impl BlobGitLedger {
         loop {
             let mut start_time = Instant::now();
             let mut old_lease = 0;
+            log::trace!(
+                "Attempt to lock BlobGitLedger start_time={:?} old_lease={:?}",
+                start_time,
+                old_lease
+            );
             let (commit, data) = loop {
+                log::trace!("Fetch remote data");
                 let (commit, data, lease) = match self.inner.fetch()? {
-                    None => (None, Vec::default(), 0),
+                    None => {
+                        log::trace!("No remote data found; using default.");
+                        (None, Vec::default(), 0)
+                    }
                     Some((commit, tree)) => {
                         let (data, lease) = decode(&self.inner.repo, tree)?;
                         let commit_id: ObjectId = commit.id.into();
+                        log::trace!("Found commit {}", &commit_id);
                         (Some(commit_id), data, lease)
                     }
                 };
 
                 if lease == 0 {
+                    log::trace!("Existing lease=0; claiming immediately");
                     break (commit, data);
                 }
 
                 if lease != old_lease {
                     old_lease = lease;
                     start_time = Instant::now();
+                    log::trace!(
+                        "old_lease={}; remote lease={}, waiting for expiry starting at {:?}",
+                        old_lease,
+                        lease,
+                        start_time
+                    );
                 }
 
                 let elapsed = start_time.elapsed();
 
                 if elapsed >= self.lease_length {
+                    log::trace!(
+                        "Waited long enough for remote lease {} to expire",
+                        old_lease
+                    );
                     break (commit, data);
                 }
 
+                log::trace!(
+                    "Sleeping; waiting for lease {}; remaining={:?}",
+                    old_lease,
+                    (self.lease_length - elapsed)
+                );
                 std::thread::sleep(std::cmp::min(
                     self.poll_time,
                     self.lease_length
@@ -74,6 +106,7 @@ impl BlobGitLedger {
             };
 
             let lease: u64 = rand::thread_rng().gen();
+            log::trace!("Acquiring with lease={}", lease);
             let tb = encode(&self.inner.repo, &data, lease)?;
             if let Some(commit) = self.inner.push(commit, &tb)? {
                 return Ok(BlobGitLedgerGuard {
@@ -94,9 +127,13 @@ impl BlobGitLedgerGuard {
 
     /// Update the data and renew the lease.
     pub fn update(&mut self, data: &[u8]) -> Result<()> {
+        let old_lease = self.lease;
         self.lease = rand::thread_rng().gen();
         let tb = encode(&self.inner.repo, &data, self.lease)?;
-        let commit = self.inner.push(self.commit, &tb)?.context("Lost lease")?;
+        let commit = self
+            .inner
+            .push(self.commit, &tb)?
+            .with_context(|| format!("Lost lease {}", old_lease))?;
         self.commit = Some(commit);
         self.data.clear();
         self.data.extend_from_slice(data);
@@ -105,8 +142,11 @@ impl BlobGitLedgerGuard {
 
     /// Update the data and release the lease.
     pub fn update_and_release(self, data: &[u8]) -> Result<()> {
+        let old_lease = self.lease;
         let tb = encode(&self.inner.repo, &data, 0)?;
-        self.inner.push(self.commit, &tb)?.context("Lost lease")?;
+        self.inner
+            .push(self.commit, &tb)?
+            .with_context(|| format!("Lost lease {}", old_lease))?;
         Ok(())
     }
 
@@ -117,16 +157,23 @@ impl BlobGitLedgerGuard {
 
     /// Renew the lease.
     pub fn renew(&mut self) -> Result<()> {
+        let old_lease = self.lease;
         self.lease = rand::thread_rng().gen();
         let tb = encode(&self.inner.repo, &self.data, self.lease)?;
-        let commit = self.inner.push(self.commit, &tb)?.context("Lost lease")?;
+        let commit = self
+            .inner
+            .push(self.commit, &tb)?
+            .with_context(|| format!("Lost lease {}", old_lease))?;
         self.commit = Some(commit);
         Ok(())
     }
 
     fn release_internal(&mut self) -> Result<()> {
+        let old_lease = self.lease;
         let tb = encode(&self.inner.repo, &self.data, 0)?;
-        self.inner.push(self.commit, &tb)?.context("Lost lease")?;
+        self.inner
+            .push(self.commit, &tb)?
+            .with_context(|| format!("Lost lease {}", old_lease))?;
         Ok(())
     }
 }

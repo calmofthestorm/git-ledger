@@ -13,27 +13,59 @@ pub fn init_repo(
     remote_name: &str,
     retryable: bool,
 ) -> anyhow::Result<Repository> {
+    log::trace!(
+        "Create/Open repository local:{} remote:{} remote_name:{} retryable:{}",
+        local_path.display(),
+        remote_spec,
+        remote_name,
+        retryable
+    );
     // Gave up on trying to make this race-free. Probably not safe on untrusted
     // dirs in /tmp either.
     let repo = if local_path.exists() {
+        log::trace!("Opening existing repository");
         gix::open(local_path)?
     } else {
+        log::trace!("Initialize new bare repository with gix");
         gix::init_bare(local_path)?
     };
 
-    for _ in 0..20 {
+    for attempt in 0..20 {
+        log::trace!(
+            "Waiting for remote named {}: Attempt {} / {}",
+            remote_name,
+            attempt,
+            {
+                if retryable {
+                    20
+                } else {
+                    1
+                }
+            }
+        );
         if repo.try_find_remote(remote_name).is_some() || retryable {
             break;
         }
+        log::trace!(
+            "Did not find remote named {}. Sleeping 50ms and retrying.",
+            remote_name
+        );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     match repo.try_find_remote(remote_name) {
-        Some(..) => return Ok(repo),
+        Some(..) => {
+            log::trace!("Found remote named {}", remote_name);
+            return Ok(repo);
+        }
         None if !retryable => {
             anyhow::bail!("Remote not found; unable to create");
         }
         None => {
+            log::trace!(
+                "Did not find remote named {}. Creating by shelling out to git and retrying.",
+                remote_name
+            );
             if !git_command()
                 .current_dir(local_path)
                 .arg("remote")

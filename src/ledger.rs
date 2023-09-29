@@ -105,7 +105,7 @@ impl GitLedger {
         old_commit_id: Option<ObjectId>,
         tree: &TreeBuilder,
     ) -> Result<Option<ObjectId>> {
-        let tree = self.repo.write_object(&tree)?;
+        let tree = self.repo.write_object(&tree).context("write tree to git")?;
 
         // FIXME: There is a brief race window here that would see tmp not cleaned
         // up.
@@ -116,11 +116,9 @@ impl GitLedger {
                 "A Commit In Time",
                 tree,
                 old_commit_id.into_iter(),
-            )?
+            )
+            .context("commit to git")?
             .into();
-
-        // eprintln!("{}", self.local_path.display());
-        // std::thread::sleep_ms(86400000);
 
         let result = match git_command()
             .current_dir(&self.local_path)
@@ -133,12 +131,16 @@ impl GitLedger {
             Ok(..) => match self.maybe_raced(old_commit_id) {
                 Ok(true) => Ok(None),
                 Ok(false) => anyhow::bail!("a git command failed"),
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e).context("maybe raced"),
             },
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e).context("subprocess failed"),
         };
 
-        self.repo.find_reference(self.tmp_ref.as_str())?.delete()?;
+        self.repo
+            .find_reference(self.tmp_ref.as_str())
+            .context("find_reference")?
+            .delete()
+            .context("delete")?;
 
         result
     }
@@ -166,6 +168,7 @@ impl GitLedger {
         let remote_id = peeled_only(self.repo.refs.try_find(&self.tracking_ref)?)?;
 
         if old_commit_id != remote_id {
+            log::trace!("maybe_raced: {:?} != {:?}", &old_commit_id, &remote_id);
             // TODO: Structured errors for this crate. In particular, the option
             // returns are dangerous because there's no warning if they are
             // ignored.
