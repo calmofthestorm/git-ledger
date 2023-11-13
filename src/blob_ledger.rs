@@ -72,7 +72,6 @@ impl BlobGitLedger {
                 }
 
                 if lease != old_lease {
-                    old_lease = lease;
                     start_time = Instant::now();
                     log::trace!(
                         "old_lease={}; remote lease={}, waiting for expiry starting at {:?}",
@@ -80,6 +79,7 @@ impl BlobGitLedger {
                         lease,
                         start_time
                     );
+                    old_lease = lease;
                 }
 
                 let elapsed = start_time.elapsed();
@@ -169,11 +169,18 @@ impl BlobGitLedgerGuard {
     }
 
     fn release_internal(&mut self) -> Result<()> {
+        if self.lease == 0 {
+            return Ok(());
+        }
+
         let old_lease = self.lease;
         let tb = encode(&self.inner.repo, &self.data, 0)?;
-        self.inner
+        let commit = self
+            .inner
             .push(self.commit, &tb)?
             .with_context(|| format!("Lost lease {}", old_lease))?;
+        self.commit = Some(commit);
+        self.lease = 0;
         Ok(())
     }
 }
